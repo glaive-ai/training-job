@@ -11,7 +11,7 @@ spec:
     spec:
       containers:
         - name: training-test
-          image: glaiveai/training-container:119e49c
+          image: glaiveai/training-container:5656bc3
           env:
             - name: WANDB_API_KEY
               value: 8178101716b4f4b65d6923fd79705f245ce570ea

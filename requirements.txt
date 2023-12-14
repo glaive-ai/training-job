@@ -1,7 +1,7 @@
 numpy
 fire
 transformers==4.35.0
-accelerate==0.20.1
+accelerate>=0.20.3
 wandb
 sentencepiece
 tokenizers>=0.13.3

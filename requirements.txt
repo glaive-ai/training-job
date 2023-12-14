@@ -7,6 +7,5 @@ sentencepiece
 tokenizers>=0.13.3
 wandb
 einops
-flask
 requests
 google-cloud-storage

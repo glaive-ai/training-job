@@ -1,0 +1,108 @@
+
+  0%|                                                                                                                                                                  | 0/3 [00:00<?, ?it/s]`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...
+Traceback (most recent call last):
+  File "/home/ubuntu/training-container/train.py", line 216, in train
+    trainer.train()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 1537, in train
+    return inner_training_loop(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 1854, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 2732, in training_step
+    self.accelerator.backward(loss)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/accelerate/accelerator.py", line 1853, in backward
+    loss.backward(**kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/_tensor.py", line 487, in backward
+    torch.autograd.backward(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/autograd/__init__.py", line 200, in backward
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/autograd/function.py", line 274, in apply
+    return user_fn(self, *args)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/utils/checkpoint.py", line 141, in backward
+    outputs = ctx.run_function(*detached_inputs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py", line 748, in forward
+    output = self._fsdp_wrapped_module(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/models/mistral/modeling_mistral.py", line 654, in forward
+    hidden_states, self_attn_weights, present_key_value = self.self_attn(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
+    raise ValueError(
+ValueError: Attention mask should be of size (2, 1, 130, 260), but is torch.Size([2, 1, 130, 130])
+During handling of the above exception, another exception occurred:
+Traceback (most recent call last):
+  File "/home/ubuntu/training-container/train.py", line 228, in <module>
+    train()
+  File "/home/ubuntu/training-container/train.py", line 223, in train
+    callback_completion(data_args.callback_url,None,True,str(e))
+  File "/home/ubuntu/training-container/train.py", line 46, in callback_completion
+    response = requests.post(callback_url, json=payload)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/sessions.py", line 575, in request
+    prep = self.prepare_request(req)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/sessions.py", line 486, in prepare_request
+    p.prepare(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/models.py", line 368, in prepare
+    self.prepare_url(url, params)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/models.py", line 439, in prepare_url
+    raise MissingSchema(
+requests.exceptions.MissingSchema: Invalid URL 'test': No scheme supplied. Perhaps you meant https://test?
+Traceback (most recent call last):
+  File "/home/ubuntu/training-container/train.py", line 216, in train
+    trainer.train()
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 1537, in train
+    return inner_training_loop(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 1854, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/trainer.py", line 2732, in training_step
+    self.accelerator.backward(loss)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/accelerate/accelerator.py", line 1853, in backward
+    loss.backward(**kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/_tensor.py", line 487, in backward
+    torch.autograd.backward(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/autograd/__init__.py", line 200, in backward
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/autograd/function.py", line 274, in apply
+    return user_fn(self, *args)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/utils/checkpoint.py", line 141, in backward
+    outputs = ctx.run_function(*detached_inputs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/distributed/fsdp/fully_sharded_data_parallel.py", line 748, in forward
+    output = self._fsdp_wrapped_module(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/models/mistral/modeling_mistral.py", line 654, in forward
+    hidden_states, self_attn_weights, present_key_value = self.self_attn(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1501, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/transformers/models/mistral/modeling_mistral.py", line 293, in forward
+    raise ValueError(
+ValueError: Attention mask should be of size (2, 1, 130, 260), but is torch.Size([2, 1, 130, 130])
+During handling of the above exception, another exception occurred:
+Traceback (most recent call last):
+  File "/home/ubuntu/training-container/train.py", line 228, in <module>
+    train()
+  File "/home/ubuntu/training-container/train.py", line 223, in train
+    callback_completion(data_args.callback_url,None,True,str(e))
+  File "/home/ubuntu/training-container/train.py", line 46, in callback_completion
+    response = requests.post(callback_url, json=payload)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/api.py", line 115, in post
+    return request("post", url, data=data, json=json, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/api.py", line 59, in request
+    return session.request(method=method, url=url, **kwargs)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/sessions.py", line 575, in request
+    prep = self.prepare_request(req)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/sessions.py", line 486, in prepare_request
+    p.prepare(
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/models.py", line 368, in prepare
+    self.prepare_url(url, params)
+  File "/home/ubuntu/.local/lib/python3.10/site-packages/requests/models.py", line 439, in prepare_url
+    raise MissingSchema(
+requests.exceptions.MissingSchema: Invalid URL 'test': No scheme supplied. Perhaps you meant https://test?

@@ -2,7 +2,7 @@ export IMAGE_NAME=glaiveai/training-container:$(shell git rev-parse HEAD)
 
 .PHONY: build
 build:
-	sudo docker build -f Dockerfile2 ./ -t $(IMAGE_NAME)
+	sudo docker build -f Dockerfile ./ -t $(IMAGE_NAME)
 
 .PHONY: push
 push: build

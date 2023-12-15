@@ -1,11 +1,9 @@
 numpy
 fire
 transformers==4.35.0
-accelerate>=0.20.3
+accelerate==0.22.0
 wandb
 sentencepiece
 tokenizers>=0.13.3
-wandb
-einops
 requests
 google-cloud-storage

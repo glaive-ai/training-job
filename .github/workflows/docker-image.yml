@@ -1,0 +1,32 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "master" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - uses: docker/build-push-action@v5.1.0
+    
+    - name: Get the SHA for the commit
+      id: sha
+      run: echo "::set-output name=sha::$(git rev-parse --short HEAD)"
+      
+    - name: Build the Docker image
+      run: docker build . --file Dockerfile --tag glaiveai/training-container:${{ steps.sha.outputs.sha }}
+
+    - name: Log in to Docker registry
+      run: docker login --username ${{ secrets.DOCKER_REGISTRY_USERNAME }} --password ${{ secrets.DOCKER_REGISTRY_PASSWORD }}
+
+    - name: Push Docker image
+      run: docker push glaiveai/training-container:${{ steps.sha.outputs.sha }}
+
+    # Log out from the Docker registry
+    - name: Log out from Docker registry
+      run: docker logout

@@ -6,6 +6,6 @@ RUN pip3 install -r requirements.txt
 
 ADD download.py download.py
 
-RUN  python3 download.py
+#RUN  python3 download.py
 
 ADD . .

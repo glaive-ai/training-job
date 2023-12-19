@@ -4,6 +4,7 @@ import json
 from google.cloud import storage
 import datetime
 
+GLAIVE_BUCKET = "glaive-model-weights"
 
 def _make_r_io_base(f, mode: str):
     if not isinstance(f, io.IOBase):
@@ -17,9 +18,19 @@ def jload(f, mode="r"):
     f.close()
     return jlist
 
+
+def folder_exists_on_gcs(dir: str, bucket_name: str = GLAIVE_BUCKET):
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blobs = bucket.list_blobs(prefix=dir)
+    for blob in blobs:
+        return True
+
+    return False
+
 def upload_blob(source:str,
                 destination:str,
-                bucket_name: str = "glaive-model-weights"):
+                bucket_name: str = GLAIVE_BUCKET):
     """
     Uploads a file to the specified Google Cloud Storage bucket.
     """

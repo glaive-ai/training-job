@@ -1,14 +1,16 @@
 import copy
 import logging
-import utils
+import json
 import requests
 import os
+import utils
 import torch
 import time
 import transformers
 import wandb
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
+from utils import folder_exists_on_gcs, upload_blob, GLAIVE_BUCKET
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from torch.utils.data import Dataset, DataLoader, random_split
 from torch.nn.functional import cross_entropy
@@ -45,11 +47,11 @@ class TrainingArguments:
         metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."},
     )
     learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
-    num_train_epochs: int = field(default=3, metadata={"help": "Total number of training epochs to perform."})
+    num_train_epochs: int = field(default=10, metadata={"help": "Total number of training epochs to perform."})
     cache_dir: Optional[str] = field(default=None)
     optim: Optional[str] = field(default="adamw_torch_fused")
     logging_steps: float = field(
-        default=500,
+        default=10,
         metadata={
             "help": (
                 "Log every X updates steps. "
@@ -57,7 +59,7 @@ class TrainingArguments:
         },
     )
     save_steps: float = field(
-        default=500,
+        default=10,
         metadata={
             "help": (
                 "Save checkpoint every X updates steps.  "
@@ -65,7 +67,7 @@ class TrainingArguments:
         },
     )
     eval_steps: int = field(
-        default=500,
+        default=10,
         metadata={
             "help": (
                 "Run an evaluation every X steps."
@@ -204,9 +206,16 @@ def train():
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
         output_dir = 'output'
 
-        print(type(model_args))
-        import sys
-        sys.exit(1)
+        os.makedirs(output_dir, exist_ok=True)
+
+        if folder_exists_on_gcs(model_args.model_id, GLAIVE_BUCKET):
+            raise ValueError(f"Folder `{model_args.model_id}` already exists on GCS. Did you run this experiment before?")
+
+        with open(os.path.join(output_dir, 'args.json'), 'w') as f: 
+            args_dict = dict(model_args=asdict(model_args), 
+                             data_args=asdict(data_args),
+                             training_args=asdict(training_args))
+            json.dump(args_dict, f)
 
         if data_args.data_path is None and data_args.data_url is None:
             raise ValueError("Must specify either data_path or data_url.")
@@ -218,7 +227,8 @@ def train():
 
         data_path = "data.jsonl"
         wandb.init(project="train-lora-job", 
-                   tags=[model_args.model_id])
+                   tags=[model_args.model_id],
+                   dir=output_dir)
         
         print("Loading the model...")
         start_model_load = time.time()
@@ -274,6 +284,7 @@ def train():
         i = 0
         step = 0
         log = dict(loss=0.0, num_response_tokens=0)
+        best_val_loss = 1e10
 
         start_training = time.time()
         for epoch in range(training_args.num_train_epochs):
@@ -297,26 +308,34 @@ def train():
                     step += 1
 
                 if step % training_args.logging_steps == 0:
-                    wandb.log(dict(epoch=epoch, step=step, 
-                                   loss=log['loss']/log['num_response_tokens']))
+                    wandb.log(dict(train=dict(
+                                   loss=log['loss']/log['num_response_tokens'])), 
+                                   step=step)
                     log = dict(loss=0.0, num_response_tokens=0)
 
                 if step % training_args.eval_steps == 0:
                     val_loss = eval_loop(model, val_dataloader)
-                    wandb.log(dict(epoch=epoch, step=step, 
-                                   val_loss=val_loss))
-
-                if step % training_args.save_steps == 0:
-                    output_dir = os.path.join(output_dir, f"CHECKPOINT-{step}")
+                    wandb.log(dict(valid=dict(
+                                   loss=val_loss)), 
+                                   step=step)
+                    # save model
+                    if val_loss < best_val_loss:
+                        ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
+                        peft_model.save_pretrained(ckpt_dir)
+                        best_val_loss = val_loss
                 i+=1
         
         end_training = time.time()
         wandb.log(dict(training_time=int(end_training - start_training)))
-        # url = utils.upload_blob(training_args.output_dir+"/model.safetensors",f"{model_args.model_id}.bin")
-        # if data_args.callback_url is not None: 
-        #     callback_completion(data_args.callback_url,url,False)
+
+        url = utils.upload_blob(os.path.join(output_dir, "CHECKPOINT", "adapter_model.safetensors"), 
+                                os.path.join(model_args.model_id, "CHECKPOINT", "adapter_model.safetensors"))
+        if data_args.callback_url is not None: 
+             callback_completion(data_args.callback_url,url,False)
+
     except Exception as e:
         callback_completion(data_args.callback_url,None,True,str(e))
 
 if __name__ == "__main__":
     train()
+    # python train.py --model_id test --data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"

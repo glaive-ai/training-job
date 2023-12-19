@@ -14,11 +14,13 @@ spec:
           image: ${IMAGE_NAME}
           env:
             - name: WANDB_API_KEY
-              value: 8178101716b4f4b65d6923fd79705f245ce570ea
-          command: ["torchrun", "--nproc_per_node=8", "--master_port=2121", "train.py", "--model_name_or_path", "mistralai/Mistral-7B-v0.1","--model_id","test","--callback_url","test", "--data_url", "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D", "--bf16", "True", "--output_dir", "model_run", "--num_train_epochs", "3", "--per_device_train_batch_size", "2", "--gradient_accumulation_steps", "8", "--evaluation_strategy", "no", "--save_strategy", "epoch", "--learning_rate", "1e-6", "--weight_decay", "0.01", "--warmup_ratio", "0.03", "--lr_scheduler_type", "cosine", "--logging_steps", "1", "--fsdp", "full_shard auto_wrap", "--fsdp_transformer_layer_cls_to_wrap", "MistralDecoderLayer", "--gradient_checkpointing","--optim","adamw_torch"]
+              value: a07f9a332409243f4cd7eecffd733b9297f9436e
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: gcs.json
+          command: ["torchrun", "--nproc_per_node=4", "--master_port=2121", "train.py", "--model_name_or_path", "mistralai/Mistral-7B-v0.1","--model_id","test", "--data_url", "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D", "--bf16", "True", "--output_dir", "model_run", "--num_train_epochs", "2", "--per_device_train_batch_size", "1", "--gradient_accumulation_steps", "8", "--evaluation_strategy", "no", "--save_strategy", "epoch", "--learning_rate", "1e-6", "--weight_decay", "0.01", "--warmup_ratio", "0.03", "--lr_scheduler_type", "cosine", "--logging_steps", "1", "--fsdp", "full_shard auto_wrap", "--fsdp_transformer_layer_cls_to_wrap", "MistralDecoderLayer", "--gradient_checkpointing","--optim","adamw_torch"]
           resources:
             limits:
-              nvidia.com/gpu: 8
+              nvidia.com/gpu: 4
           terminationMessagePath: /dev/termination-log
           terminationMessagePolicy: File
           imagePullPolicy: Always

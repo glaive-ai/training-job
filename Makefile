@@ -16,3 +16,7 @@ launch:
 .PHONY: delete-job
 delete-job:
 	envsubst < training-job.yaml | kubectl delete -f -
+
+.PHONY: launch-local
+launch-local:
+	sudo docker run --gpus all --rm -it --entrypoint bash -e WANDB_API_KEY=a07f9a332409243f4cd7eecffd733b9297f9436e -v $(shell pwd):/workspace $(IMAGE_NAME) 

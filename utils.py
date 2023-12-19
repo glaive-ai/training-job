@@ -17,14 +17,15 @@ def jload(f, mode="r"):
     f.close()
     return jlist
 
-def upload_blob(source_file_name:str,destination_blob_name:str):
+def upload_blob(source:str,
+                destination:str,
+                bucket_name: str = "glaive-model-weights"):
     """
     Uploads a file to the specified Google Cloud Storage bucket.
     """
-    bucket_name = "glaive-model-weights"
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
-    blob = bucket.blob(destination_blob_name)
-    blob.upload_from_filename(source_file_name,timeout=600)
+    blob = bucket.blob(destination)
+    blob.upload_from_filename(source,timeout=600)
     url = blob.generate_signed_url(datetime.timedelta(seconds=864000), method='GET')
     return url

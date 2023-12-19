@@ -1,27 +1,32 @@
 import copy
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, Optional, Sequence
-import requests
-import torch
-import transformers
 import utils
-from torch.utils.data import Dataset
-from transformers import Trainer
+import requests
+import os
+import torch
+import time
+import transformers
+import wandb
 
-
+from dataclasses import dataclass, field
+from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
+from torch.utils.data import Dataset, DataLoader, random_split
+from torch.nn.functional import cross_entropy
+from typing import Dict, Optional, Sequence
 
 IGNORE_INDEX = -100
-DEFAULT_PAD_TOKEN = "</s>"
+DEFAULT_PAD_TOKEN = "<pad>"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
 
 @dataclass
 class ModelArguments:
-    model_name_or_path: Optional[str] = field(default="mistralai/Mistral-7B-v0.1")
-    model_id: Optional[str] = field(default=None, metadata={"help": "Model ID for tracking."})
-
+    model_id: str = field(default=None, metadata={"help": "Model ID for tracking."})
+    model_name_or_path: str = field(default="mistralai/Mistral-7B-v0.1")
+    lora_r: Optional[int] = field(default=8)
+    lora_alpha: Optional[float] = field(default=32)
+    lora_dropout: Optional[float] = field(default=0.0)
 
 @dataclass
 class DataArguments:
@@ -31,19 +36,54 @@ class DataArguments:
 
 
 @dataclass
-class TrainingArguments(transformers.TrainingArguments):
+class TrainingArguments:
+    per_device_train_batch_size: int = field(
+        default=8, metadata={"help": "Batch size per GPU/TPU/MPS/NPU core/CPU for training."}
+    )
+    gradient_accumulation_steps: int = field(
+        default=1,
+        metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."},
+    )
+    learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
+    num_train_epochs: int = field(default=3, metadata={"help": "Total number of training epochs to perform."})
     cache_dir: Optional[str] = field(default=None)
-    optim: str = field(default="adamw_torch_fused")
-    model_max_length: int = field(
-        default=4096,
+    optim: Optional[str] = field(default="adamw_torch_fused")
+    logging_steps: float = field(
+        default=500,
+        metadata={
+            "help": (
+                "Log every X updates steps. "
+            )
+        },
+    )
+    save_steps: float = field(
+        default=500,
+        metadata={
+            "help": (
+                "Save checkpoint every X updates steps.  "
+            )
+        },
+    )
+    eval_steps: int = field(
+        default=500,
+        metadata={
+            "help": (
+                "Run an evaluation every X steps."
+            )
+        },
+    )
+    max_seq_length: Optional[int] = field(
+        default=None,
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
+    use_amp : Optional[bool] = field(default=True, 
+                                     metadata={"help": "use mixed precision?"})
 
 def callback_completion(callback_url:str,model_url:str,failed:bool,error:str=None):
     """
     Sends a callback to the specified URL.
     """
-    payload = {'failed': failed,"url":model_url,"error":error}
+    payload = {'failed': failed, "url": model_url, "error": error}
     response = requests.post(callback_url, json=payload)
     return response
 
@@ -71,107 +111,102 @@ def smart_tokenizer_and_embedding_resize(
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
 
-def _tokenize_fn(strings: Sequence[str], tokenizer: transformers.PreTrainedTokenizer) -> Dict:
-    """Tokenize a list of strings."""
-    tokenized_list = [
-        tokenizer(
-            text,
-            return_tensors="pt",
-            padding="longest",
-            max_length=tokenizer.model_max_length,
-            truncation=True,
-        )
-        for text in strings
-    ]
-    input_ids = labels = [tokenized.input_ids[0] for tokenized in tokenized_list]
-    input_ids_lens = labels_lens = [
-        tokenized.input_ids.ne(tokenizer.pad_token_id).sum().item() for tokenized in tokenized_list
-    ]
-    return dict(
-        input_ids=input_ids,
-        labels=labels,
-        input_ids_lens=input_ids_lens,
-        labels_lens=labels_lens,
-    )
-
-
-def preprocess(
-    sources: Sequence[str],
-    targets: Sequence[str],
-    tokenizer: transformers.PreTrainedTokenizer,
-) -> Dict:
-    """Preprocess the data by tokenizing."""
-    examples = [s + t for s, t in zip(sources, targets)]
-    examples_tokenized, sources_tokenized = [_tokenize_fn(strings, tokenizer) for strings in (examples, sources)]
-    input_ids = examples_tokenized["input_ids"]
-    labels = copy.deepcopy(input_ids)
-    for label, source_len in zip(labels, sources_tokenized["input_ids_lens"]):
-        label[:source_len] = IGNORE_INDEX
-    return dict(input_ids=input_ids, labels=labels)
-
-
-class SupervisedDataset(Dataset):
-    """Dataset for supervised fine-tuning."""
+class SFTDataset(Dataset):
+    """Dataset for Supervised Fine-Tuning (SFT)."""
 
     def __init__(self, data_path: str, tokenizer: transformers.PreTrainedTokenizer):
-        super(SupervisedDataset, self).__init__()
+        super(SFTDataset, self).__init__()
+        self.tokenizer = tokenizer
         logging.warning("Loading data...")
-        list_data_dict = utils.jload(data_path)
-
+        self.loaded_dataset = utils.jload(data_path)
+        self.input_ids = list()
+        self.labels = list()
+        self.response_len = list()
         logging.warning("Formatting inputs...")
+        self._preprocess()
 
-        sources = [
-            example["prompt"]
-            for example in list_data_dict
-        ]
-        targets = [
-            example["response"]
-            for example in list_data_dict
-        ]
+    def _preprocess(self):
+        """Preprocess the data by tokenizing."""
+        for i, example in enumerate(self.loaded_dataset):
+            if any([key not in example for key in ('prompt', 'response')]):
+                raise ValueError('`prompt` or `response` not found in {i} example', i=i)
+            instruction = example['prompt'] + example['response']
+            ex_input_ids = self.tokenizer(instruction,
+                                      return_tensors="pt",
+                                      padding="longest",
+                                      max_length=self.tokenizer.model_max_length,
+                                      truncation=True).input_ids[0]
+            ex_prompt_len = len(self.tokenizer(example['prompt'],
+                                      return_tensors="pt",
+                                      padding="longest",
+                                      max_length=self.tokenizer.model_max_length,
+                                      truncation=True).input_ids[0])
+            ex_response_len = len(ex_input_ids) - ex_prompt_len
+            ex_labels = copy.deepcopy(ex_input_ids)
+            ex_labels[:ex_prompt_len] = IGNORE_INDEX
+            self.input_ids.append(ex_input_ids)
+            self.labels.append(ex_labels)
+            self.response_len.append(ex_response_len)
 
-        logging.warning("Tokenizing inputs... This may take some time...")
-        data_dict = preprocess(sources, targets, tokenizer)
-
-        self.input_ids = data_dict["input_ids"]
-        self.labels = data_dict["labels"]
 
     def __len__(self):
         return len(self.input_ids)
 
     def __getitem__(self, i) -> Dict[str, torch.Tensor]:
-        return dict(input_ids=self.input_ids[i], labels=self.labels[i])
+        return dict(input_ids=self.input_ids[i], 
+                    labels=self.labels[i],
+                    response_len=self.response_len[i])
 
 
 @dataclass
-class DataCollatorForSupervisedDataset(object):
+class DataCollatorForSFTDataset(object):
     """Collate examples for supervised fine-tuning."""
 
     tokenizer: transformers.PreTrainedTokenizer
+    device: torch.cuda.Device
 
-    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+    def __call__(self, examples: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        input_ids = [example['input_ids'] for example in examples]
+        labels = [example['labels'] for example in examples]
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        )
-        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+        ).to(self.device)
+        labels = torch.nn.utils.rnn.pad_sequence(
+            labels, batch_first=True, padding_value=IGNORE_INDEX
+        ).to(self.device)
+        response_len = [example['response_len'] for example in examples]
         return dict(
             input_ids=input_ids,
             labels=labels,
             attention_mask=input_ids.ne(self.tokenizer.pad_token_id),
-        )
+            response_len=response_len)
 
-
-def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer, data_path:str) -> Dict:
-    """Make dataset and collator for supervised fine-tuning."""
-    train_dataset = SupervisedDataset(tokenizer=tokenizer, data_path=data_path)
-    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
-    return dict(train_dataset=train_dataset, eval_dataset=None, data_collator=data_collator)
-
+def eval_loop(model, dataloader):
+    model.eval()
+    loss = 0.0
+    num_response_tokens = 0
+    with torch.no_grad():
+        for batch in dataloader:
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                output = model(input_ids=batch['input_ids'], 
+                                attention_mask=batch['attention_mask'])
+                loss = cross_entropy(output.logits.transpose(1, 2), 
+                                        batch['labels'], 
+                                        reduction='sum',
+                                        ignore_index=IGNORE_INDEX)
+                loss += loss.item()
+                num_response_tokens += sum(batch['response_len'])
+    return loss/num_response_tokens
 
 def train():
     try:
         parser = transformers.HfArgumentParser((ModelArguments, DataArguments, TrainingArguments))
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        output_dir = 'output'
+
+        print(type(model_args))
+        import sys
+        sys.exit(1)
 
         if data_args.data_path is None and data_args.data_url is None:
             raise ValueError("Must specify either data_path or data_url.")
@@ -182,22 +217,25 @@ def train():
                 file.write(response.text)
 
         data_path = "data.jsonl"
-
-
+        wandb.init(project="train-lora-job", 
+                   tags=[model_args.model_id])
+        
+        print("Loading the model...")
+        start_model_load = time.time()
+        device = 'cuda:0'
         model = transformers.AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            trust_remote_code=True,
-        )
+            "mistralai/Mistral-7B-v0.1"
+        ).to(device)
+        wandb.log(dict(model_load_time=int(time.time() - start_model_load)))
 
+        logging.info("Loading the tokenizer...")
         tokenizer = transformers.AutoTokenizer.from_pretrained(
             model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            model_max_length=training_args.model_max_length,
+            model_max_length=training_args.max_seq_length,
             padding_side="right",
-            use_fast=False,
-            trust_remote_code=True,
+            use_fast=False
         )
+
         special_tokens_dict = dict()
         if tokenizer.pad_token is None:
             special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
@@ -212,18 +250,73 @@ def train():
             model=model,
         )
 
-        data_module = make_supervised_data_module(tokenizer=tokenizer, data_path=data_path)
-        trainer = Trainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
-        trainer.train()
-        trainer.save_state()
-        trainer.save_model(output_dir=training_args.output_dir)
+        lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, 
+                                 r=model_args.lora_r,
+                                 lora_alpha=model_args.lora_alpha)
+        peft_model = get_peft_model(model, lora_config)
 
-        url = utils.upload_blob(training_args.output_dir+"/pytorch_model.bin",f"{model_args.model_id}.bin")
-        callback_completion(data_args.callback_url,url,False)
+        logging.info("Loading the data...")
+        dataset = SFTDataset(tokenizer=tokenizer, data_path=data_path)
+        train_dataset, val_dataset = random_split(dataset, [0.9, 0.1])
+        collator_fn = DataCollatorForSFTDataset(tokenizer=tokenizer, device=device)
+
+        training_dataloader = DataLoader(train_dataset, 
+                                         batch_size=training_args.per_device_train_batch_size,
+                                         shuffle=True,
+                                         collate_fn=collator_fn)
+        val_dataloader = DataLoader(val_dataset, 
+                                    batch_size=training_args.per_device_train_batch_size,
+                                    collate_fn=collator_fn)                                 
+        optimizer = torch.optim.AdamW(peft_model.parameters(), 
+                                      lr=training_args.learning_rate)
+        scaler = torch.cuda.amp.GradScaler(enabled=training_args.use_amp)
+
+        i = 0
+        step = 0
+        log = dict(loss=0.0, num_response_tokens=0)
+
+        start_training = time.time()
+        for epoch in range(training_args.num_train_epochs):
+            for batch in training_dataloader:
+                model.train()
+                with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
+                    output = model(input_ids=batch['input_ids'], 
+                                   attention_mask=batch['attention_mask'])
+                    loss = cross_entropy(output.logits.transpose(1, 2), 
+                                         batch['labels'], 
+                                         reduction='sum',
+                                         ignore_index=IGNORE_INDEX)
+                scaler.scale(loss).backward()
+                log['loss'] += loss.item()
+                log['num_response_tokens'] += sum(batch['response_len'])
+
+                if (i + 1) % training_args.gradient_accumulation_steps == 0:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad()
+                    step += 1
+
+                if step % training_args.logging_steps == 0:
+                    wandb.log(dict(epoch=epoch, step=step, 
+                                   loss=log['loss']/log['num_response_tokens']))
+                    log = dict(loss=0.0, num_response_tokens=0)
+
+                if step % training_args.eval_steps == 0:
+                    val_loss = eval_loop(model, val_dataloader)
+                    wandb.log(dict(epoch=epoch, step=step, 
+                                   val_loss=val_loss))
+
+                if step % training_args.save_steps == 0:
+                    output_dir = os.path.join(output_dir, f"CHECKPOINT-{step}")
+                i+=1
+        
+        end_training = time.time()
+        wandb.log(dict(training_time=int(end_training - start_training)))
+        # url = utils.upload_blob(training_args.output_dir+"/model.safetensors",f"{model_args.model_id}.bin")
+        # if data_args.callback_url is not None: 
+        #     callback_completion(data_args.callback_url,url,False)
     except Exception as e:
         callback_completion(data_args.callback_url,None,True,str(e))
-    
-
 
 if __name__ == "__main__":
     train()

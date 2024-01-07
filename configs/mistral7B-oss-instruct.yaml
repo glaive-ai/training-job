@@ -18,7 +18,7 @@ spec:
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: gcs.json
           command: ["python", "train.py", 
-                    "--model_id", "mistral7B-OSS-instruct",
+                    "--model_id", "mistral7B-OSS-instruct-full",
                     "--model_name_or_path", "mistralai/Mistral-7B-v0.1",
                     "--hf_data_path", "ise-uiuc/Magicoder-OSS-Instruct-75K",
                     "--prompt_key", "problem", "--response_key", "solution",

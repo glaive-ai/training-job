@@ -15,7 +15,8 @@ def tokenize_sft_data(data : List[Dict],
                       tokenizer: transformers.PreTrainedTokenizer, 
                       ignore_index : int = -100,
                       prompt_key : str ='prompt',
-                      response_key : str ='response'):
+                      response_key : str ='response',
+                      max_seq_len : int = 2048):
     """Tokenize the sft data"""
     input_ids, labels, response_len = list(), list(), list()
     for i, example in enumerate(data):
@@ -35,9 +36,10 @@ def tokenize_sft_data(data : List[Dict],
         ex_response_len = len(ex_input_ids) - ex_prompt_len
         ex_labels = copy.deepcopy(ex_input_ids)
         ex_labels[:ex_prompt_len] = ignore_index
-        input_ids.append(ex_input_ids)
-        labels.append(ex_labels)
-        response_len.append(ex_response_len)
+        if len(ex_input_ids) <= max_seq_len:
+            input_ids.append(ex_input_ids)
+            labels.append(ex_labels)
+            response_len.append(ex_response_len)
     return input_ids, labels, response_len
 
 class SFTDataset(Dataset):

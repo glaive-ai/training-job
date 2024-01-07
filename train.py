@@ -231,8 +231,6 @@ def train(model_args, data_args, training_args):
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
             peft_model.train()
-            if batch['input_ids'].shape[1] > 2000:
-                continue
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = peft_model(input_ids=batch['input_ids'], 
                                     attention_mask=batch['attention_mask'])

@@ -212,7 +212,7 @@ def train(model_args, data_args, training_args):
 
     training_dataloader = DataLoader(train_dataset, 
                                      batch_size=training_args.per_device_train_batch_size,
-                                     shuffle=False,
+                                     shuffle=True,
                                      collate_fn=collator_fn)
     val_dataloader = DataLoader(val_dataset, 
                                 batch_size=training_args.per_device_train_batch_size,
@@ -230,7 +230,8 @@ def train(model_args, data_args, training_args):
     start_training = time.time()
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
-            peft_model.eval()
+            peft_model.train()
+            logging.info(batch['input_ids'].shape)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = peft_model(input_ids=batch['input_ids'], 
                                     attention_mask=batch['attention_mask'])

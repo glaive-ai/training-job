@@ -11,7 +11,7 @@ push: build
 	sudo docker push $(IMAGE_NAME)
 
 .PHONY: launch-job
-launch: 
+launch-job: 
 	envsubst < configs/mistral7B-oss-instruct.yaml | kubectl apply -f -
 
 .PHONY: delete-job

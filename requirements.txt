@@ -1,6 +1,7 @@
 numpy
 fire
 transformers==4.35.0
+datasets
 flash-attn>=2.3.1
 peft>=0.7.1
 wandb

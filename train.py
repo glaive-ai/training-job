@@ -11,17 +11,22 @@ import wandb
 import logging
 
 from dataclasses import dataclass, field, asdict
-from dataset import SFTDataset, DataCollatorForSFTDataset
+from dataset import HF_SFTDataset, SFTDataset, DataCollatorForSFTDataset
 from utils import folder_exists_on_gcs, upload_blob, GLAIVE_BUCKET
+from logger_config import setup_logging
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, random_split, Subset
 from torch.nn.functional import cross_entropy
 from typing import Dict, Optional, Sequence
+from urllib.parse import urlparse
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "<pad>"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "<unk>"
+
+setup_logging()
+logger = logging.getLogger(__name__)
 
 @dataclass
 class ModelArguments:
@@ -33,8 +38,11 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    data_path: Optional[str] = field(default=None, metadata={"help": "Path to the training data."})
-    data_url: Optional[str] = field(default=None, metadata={"help": "URL to download the training data."})
+    local_data_path: Optional[str] = field(default=None, metadata={"help": "Local path to the training data."})
+    gcs_data_url: Optional[str] = field(default=None, metadata={"help": "GCS URL to download the training data."})
+    hf_data_path: Optional[str] = field(default=None, metadata={"help": "HF data path"})
+    prompt_key: Optional[str] = field(default="prompt", metadata={"help": "Column of the prompt in the dataset"})
+    response_key: Optional[str] = field(default="response", metadata={"help": "Column of the response in the dataset"})
     callback_url: Optional[str] = field(default=None, metadata={"help": "URL for callback notifications."})
 
 
@@ -106,20 +114,21 @@ def smart_tokenizer_and_embedding_resize(
 
 def eval_loop(model, dataloader):
     model.eval()
-    loss = 0.0
-    num_response_tokens = 0
+    log = dict(loss=0.0, num_response_tokens=0)
+
     with torch.no_grad():
         for batch in dataloader:
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = model(input_ids=batch['input_ids'], 
                                 attention_mask=batch['attention_mask'])
                 loss = cross_entropy(output.logits.transpose(1, 2), 
-                                        batch['labels'], 
-                                        reduction='sum',
-                                        ignore_index=IGNORE_INDEX)
-                loss += loss.item()
-                num_response_tokens += sum(batch['response_len'])
-    return loss/num_response_tokens
+                                     batch['labels'], 
+                                     reduction='sum',
+                                     ignore_index=IGNORE_INDEX)
+            log['loss'] += loss.item()
+            log['num_response_tokens'] += sum(batch['response_len'])
+        logger.info(f"val loss: {log['loss']} toks: {log['num_response_tokens']}")
+    return log['loss']/log['num_response_tokens']
 
 def train(model_args, data_args, training_args):
     output_dir = 'output'
@@ -134,20 +143,22 @@ def train(model_args, data_args, training_args):
                             training_args=asdict(training_args))
         json.dump(args_dict, f)
 
-    if data_args.data_path is None and data_args.data_url is None:
-        raise ValueError("Must specify either data_path or data_url.")
+    if data_args.local_data_path is None and data_args.gcs_data_url is None and data_args.hf_data_path is None:
+        raise ValueError("Must specify either `local_data_path`, `gcs_data_url` or `hf_data_path`")
     
-    if data_args.data_url is not None:
-        response = requests.get(data_args.data_url)
-        with open('data.jsonl', 'w') as file:
+    if data_args.gcs_data_url is not None:
+        logger.info(f"Downloading `{data_args.gcs_data_url}` to `data.jsonl`")
+        response = requests.get(data_args.gcs_data_url)
+        downloaded_filename = os.path.basename(urlparse(data_args.gcs_data_url).path) 
+        with open(downloaded_filename, 'w') as file:
             file.write(response.text)
+            data_args.local_data_path = downloaded_filename
 
-    data_path = "data.jsonl"
     wandb.init(project="train-lora-job", 
                 tags=[model_args.model_id],
                 dir=output_dir)
     
-    print("Loading the model...")
+    logger.info("Loading the model...")
     start_model_load = time.time()
     device = 'cuda:0'
     model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -162,6 +173,7 @@ def train(model_args, data_args, training_args):
         padding_side="right",
         use_fast=False
     )
+
 
     special_tokens_dict = dict()
     if tokenizer.pad_token is None:
@@ -178,26 +190,35 @@ def train(model_args, data_args, training_args):
     )
 
     lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, 
-                                r=model_args.lora_r,
-                                lora_alpha=model_args.lora_alpha)
+                             r=model_args.lora_r,
+                             lora_alpha=model_args.lora_alpha)
     peft_model = get_peft_model(model, lora_config)
 
-    logging.info("Loading the data...")
-    dataset = SFTDataset(tokenizer=tokenizer, data_path=data_path, 
-                         ignore_index=IGNORE_INDEX)
-    train_dataset, val_dataset = random_split(dataset, [0.9, 0.1])
+    logger.info("Loading the data...")
+    if data_args.local_data_path is not None:
+        dataset = SFTDataset(tokenizer=tokenizer, data_path=data_args.local_data_path, 
+                             prompt_key=data_args.prompt_key, response_key=data_args.response_key,
+                             ignore_index=IGNORE_INDEX)
+        if data_args.hf_data_path is not None:
+            logging.warning("Loading dataset from `local_data_path` and ignoring the HF dataset specified by `hf_data_path`")
+    else: 
+        dataset = HF_SFTDataset(tokenizer=tokenizer, data_path=data_args.hf_data_path, 
+                                prompt_key=data_args.prompt_key, response_key=data_args.response_key,
+                                ignore_index=IGNORE_INDEX)
+    train_dataset, val_dataset = random_split(dataset, [0.97, 0.03])
+
     collator_fn = DataCollatorForSFTDataset(tokenizer=tokenizer, device=device, 
                                             ignore_index=IGNORE_INDEX)
 
     training_dataloader = DataLoader(train_dataset, 
-                                        batch_size=training_args.per_device_train_batch_size,
-                                        shuffle=True,
-                                        collate_fn=collator_fn)
+                                     batch_size=training_args.per_device_train_batch_size,
+                                     shuffle=False,
+                                     collate_fn=collator_fn)
     val_dataloader = DataLoader(val_dataset, 
                                 batch_size=training_args.per_device_train_batch_size,
                                 collate_fn=collator_fn)                                 
     optimizer = torch.optim.AdamW(peft_model.parameters(), 
-                                    lr=training_args.learning_rate)
+                                  lr=training_args.learning_rate)
     scaler = torch.cuda.amp.GradScaler(enabled=training_args.use_amp)
 
     i = 0
@@ -205,43 +226,50 @@ def train(model_args, data_args, training_args):
     log = dict(loss=0.0, num_response_tokens=0)
     best_val_loss = 1e10
 
+    logger.info("Start training...")
     start_training = time.time()
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
-            model.train()
+            peft_model.eval()
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
-                output = model(input_ids=batch['input_ids'], 
-                                attention_mask=batch['attention_mask'])
+                output = peft_model(input_ids=batch['input_ids'], 
+                                    attention_mask=batch['attention_mask'])
                 loss = cross_entropy(output.logits.transpose(1, 2), 
-                                        batch['labels'], 
-                                        reduction='sum',
-                                        ignore_index=IGNORE_INDEX)
-            scaler.scale(loss).backward()
+                                     batch['labels'], 
+                                     reduction='sum',
+                                     ignore_index=IGNORE_INDEX)
+            
             log['loss'] += loss.item()
             log['num_response_tokens'] += sum(batch['response_len'])
 
+            scaler.scale(loss).backward()
+            
             if (i + 1) % training_args.gradient_accumulation_steps == 0:
                 scaler.step(optimizer)
                 scaler.update()
                 optimizer.zero_grad()
                 step += 1
 
-            if step % training_args.logging_steps == 0:
-                wandb.log(dict(train=dict(
-                                loss=log['loss']/log['num_response_tokens'])), 
-                                step=step)
-                log = dict(loss=0.0, num_response_tokens=0)
+                if step % training_args.logging_steps == 0:
+                    tmp_loss = log['loss']/log['num_response_tokens']
+                    wandb.log(dict(train=dict(
+                                    loss=tmp_loss)), 
+                                    step=step)
+                    logger.info(f"Step {step} - train-loss: {tmp_loss}")
+                    log = dict(loss=0.0, num_response_tokens=0)
 
-            if step % training_args.eval_steps == 0:
-                val_loss = eval_loop(model, val_dataloader)
-                wandb.log(dict(valid=dict(
-                                loss=val_loss)), 
-                                step=step)
-                # only save best model (i.e., early stopping)
-                if val_loss < best_val_loss:
-                    ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
-                    peft_model.save_pretrained(ckpt_dir)
-                    best_val_loss = val_loss
+                if step % training_args.eval_steps == 0:
+                    val_loss = eval_loop(peft_model, val_dataloader)
+                    peft_model.train()
+                    wandb.log(dict(valid=dict(
+                                    loss=val_loss)), 
+                                    step=step)
+                    logger.info(f"Step {step} - val-loss: {val_loss}")
+                    # only save best model (i.e., early stopping)
+                    if val_loss < best_val_loss:
+                        ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
+                        peft_model.save_pretrained(ckpt_dir)
+                        best_val_loss = val_loss
             i+=1
     
     end_training = time.time()
@@ -250,9 +278,11 @@ def train(model_args, data_args, training_args):
     gcs_url = utils.upload_blob(os.path.join(output_dir, "CHECKPOINT", "adapter_model.safetensors"), 
                             os.path.join(model_args.model_id, "CHECKPOINT", "adapter_model.safetensors"))
     utils.upload_blob(os.path.join(output_dir, "CHECKPOINT", "adapter_config.json"), 
-                            os.path.join(model_args.model_id, "CHECKPOINT", "adapter_config.json")) 
+                      os.path.join(model_args.model_id, "CHECKPOINT", "adapter_config.json"))
     utils.upload_blob(os.path.join(output_dir, "args.json"), 
-                        os.path.join(model_args.model_id, "args.json"))
+                      os.path.join(model_args.model_id, "args.json"))
+    utils.upload_blob(os.path.join(output_dir, "log.txt"), 
+                      os.path.join(model_args.model_id, "log.txt"))
     return gcs_url
 
 if __name__ == "__main__":
@@ -265,4 +295,5 @@ if __name__ == "__main__":
 
     except Exception as e:
         callback_completion(data_args.callback_url,None,True,str(e))
-    # python train.py --model_id test --data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"
+    # python train.py --model_id test --gcs_data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"
+    # python train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 2 --gradient_accumulation_steps 4

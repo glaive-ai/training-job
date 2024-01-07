@@ -1,6 +1,7 @@
 export IMAGE_NAME=glaiveai/training-container:$(shell git rev-parse HEAD)
 export JOB_NAME=training-job-$(shell git rev-parse HEAD)
 
+
 .PHONY: build
 build:
 	sudo docker build -f Dockerfile ./ -t $(IMAGE_NAME)
@@ -11,11 +12,11 @@ push: build
 
 .PHONY: launch-job
 launch: 
-	envsubst < training-job.yaml | kubectl apply -f -
+	envsubst < configs/mistral7B-oss-instruct.yaml | kubectl apply -f -
 
 .PHONY: delete-job
 delete-job:
-	envsubst < training-job.yaml | kubectl delete -f -
+	envsubst < configs/mistral7B-oss-instruct.yaml | kubectl delete -f -
 
 .PHONY: launch-local
 launch-local:

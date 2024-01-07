@@ -2,54 +2,90 @@ import copy
 import logging
 import torch
 import transformers
+import datasets
 import utils
 
 from dataclasses import dataclass
 from torch.utils.data import Dataset
-from typing import Dict, Sequence, Optional
+from typing import List, Dict, Sequence, Optional
 
+logger = logging.getLogger(__name__)
+
+def tokenize_sft_data(data : List[Dict],
+                      tokenizer: transformers.PreTrainedTokenizer, 
+                      ignore_index : int = -100,
+                      prompt_key : str ='prompt',
+                      response_key : str ='response'):
+    """Tokenize the sft data"""
+    input_ids, labels, response_len = list(), list(), list()
+    for i, example in enumerate(data):
+        if any([key not in example for key in (prompt_key, response_key)]):
+            raise ValueError(f'{prompt_key} or {response_key} not found in {i}-th example')
+        instruction = example[prompt_key] + example[response_key]
+        ex_input_ids = tokenizer(instruction,
+                                 return_tensors="pt",
+                                 padding="longest",
+                                 max_length=tokenizer.model_max_length,
+                                 truncation=True).input_ids[0]
+        ex_prompt_len = len(tokenizer(example[prompt_key],
+                                      return_tensors="pt",
+                                      padding="longest",
+                                      max_length=tokenizer.model_max_length,
+                                      truncation=True).input_ids[0])
+        ex_response_len = len(ex_input_ids) - ex_prompt_len
+        ex_labels = copy.deepcopy(ex_input_ids)
+        ex_labels[:ex_prompt_len] = ignore_index
+        input_ids.append(ex_input_ids)
+        labels.append(ex_labels)
+        response_len.append(ex_response_len)
+    return input_ids, labels, response_len
 
 class SFTDataset(Dataset):
     """Dataset for Supervised Fine-Tuning (SFT)."""
 
-    def __init__(self, data_path: str, 
+    def __init__(self, 
+                 data_path: str, 
                  tokenizer: transformers.PreTrainedTokenizer, 
+                 prompt_key : str = 'prompt',
+                 response_key : str = 'response',
                  ignore_index : int = -100):
         super(SFTDataset, self).__init__()
         self.tokenizer = tokenizer
         self.data_path = data_path
         self.ignore_index = ignore_index
-        logging.info("Loading data...")
+        logger.info("Loading data...")
         self.loaded_dataset = utils.jload(data_path)
-        self.input_ids = list()
-        self.labels = list()
-        self.response_len = list()
-        logging.info("Formatting inputs...")
-        self._preprocess()
+        logger.info("Tokenizing data...")
+        self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
+                                                                           ignore_index, prompt_key, response_key)
 
-    def _preprocess(self):
-        """Preprocess the data by tokenizing."""
-        for i, example in enumerate(self.loaded_dataset):
-            if any([key not in example for key in ('prompt', 'response')]):
-                raise ValueError('`prompt` or `response` not found in {i} example', i=i)
-            instruction = example['prompt'] + example['response']
-            ex_input_ids = self.tokenizer(instruction,
-                                      return_tensors="pt",
-                                      padding="longest",
-                                      max_length=self.tokenizer.model_max_length,
-                                      truncation=True).input_ids[0]
-            ex_prompt_len = len(self.tokenizer(example['prompt'],
-                                      return_tensors="pt",
-                                      padding="longest",
-                                      max_length=self.tokenizer.model_max_length,
-                                      truncation=True).input_ids[0])
-            ex_response_len = len(ex_input_ids) - ex_prompt_len
-            ex_labels = copy.deepcopy(ex_input_ids)
-            ex_labels[:ex_prompt_len] = self.ignore_index
-            self.input_ids.append(ex_input_ids)
-            self.labels.append(ex_labels)
-            self.response_len.append(ex_response_len)
+    def __len__(self):
+        return len(self.input_ids)
 
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        return dict(input_ids=self.input_ids[i], 
+                    labels=self.labels[i],
+                    response_len=self.response_len[i])
+
+
+class HF_SFTDataset(Dataset):
+    """Dataset for Supervised Fine-Tuning (SFT)."""
+    def __init__(self, 
+                 data_path: str, 
+                 tokenizer: transformers.PreTrainedTokenizer, 
+                 prompt_key : str = 'prompt',
+                 response_key : str = 'response',
+                 split : str = "train",
+                 ignore_index : int = -100):
+        super(HF_SFTDataset, self).__init__()
+        self.tokenizer = tokenizer
+        self.data_path = data_path
+        self.ignore_index = ignore_index
+        logger.info("Loading HF dataset...")
+        self.loaded_dataset = datasets.load_dataset(data_path, split=split)
+        logger.info("Tokenize dataset...")
+        self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
+                                                                           ignore_index, prompt_key, response_key)
 
     def __len__(self):
         return len(self.input_ids)

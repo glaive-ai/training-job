@@ -25,6 +25,9 @@ DEFAULT_PAD_TOKEN = "<pad>"
 DEFAULT_EOS_TOKEN = "</s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
+output_dir = 'output'
+os.makedirs(output_dir, exist_ok=True)
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -131,9 +134,6 @@ def eval_loop(model, dataloader):
     return log['loss']/log['num_response_tokens']
 
 def train(model_args, data_args, training_args):
-    output_dir = 'output'
-    os.makedirs(output_dir, exist_ok=True)
-
     if folder_exists_on_gcs(model_args.model_id, GLAIVE_BUCKET):
         raise ValueError(f"Folder `{model_args.model_id}` already exists on GCS. Did you run this experiment before?")
 

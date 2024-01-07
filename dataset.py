@@ -82,7 +82,7 @@ class HF_SFTDataset(Dataset):
         self.data_path = data_path
         self.ignore_index = ignore_index
         logger.info("Loading HF dataset...")
-        self.loaded_dataset = datasets.load_dataset(data_path, split=split)
+        self.loaded_dataset = datasets.load_dataset(data_path, split=split).select(indices=range(5000))
         logger.info("Tokenize dataset...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)

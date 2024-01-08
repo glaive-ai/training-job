@@ -277,15 +277,20 @@ def train(model_args, data_args, training_args):
     end_training = time.time()
     wandb.log(dict(training_time=int(end_training - start_training)))
 
-    gcs_url = utils.upload_blob(os.path.join(output_dir, "CHECKPOINT", "adapter_model.safetensors"), 
-                            os.path.join(model_args.model_id, "CHECKPOINT", "adapter_model.safetensors"))
-    utils.upload_blob(os.path.join(output_dir, "CHECKPOINT", "adapter_config.json"), 
-                      os.path.join(model_args.model_id, "CHECKPOINT", "adapter_config.json"))
-    utils.upload_blob(os.path.join(output_dir, "args.json"), 
-                      os.path.join(model_args.model_id, "args.json"))
-    utils.upload_blob(os.path.join(output_dir, "log.txt"), 
-                      os.path.join(model_args.model_id, "log.txt"))
-    return gcs_url
+    gcs_urls = dict()
+    for file in os.listdir(ckpt_dir):
+        filename = os.path.basename(file)
+        gcs_urls[filename] = utils.upload_blob(
+            os.path.join(ckpt_dir, filename), 
+            os.path.join(model_args.model_id, "CHECKPOINT", filename))
+    gcs_urls["args.json"] = utils.upload_blob(
+        os.path.join(output_dir, "args.json"), 
+        os.path.join(model_args.model_id, "args.json"))
+    gcs_urls["log.txt"] = utils.upload_blob(os.path.join(output_dir, "log.txt"), 
+        os.path.join(model_args.model_id, "log.txt"))
+    
+    gcs_model_url = [k for k in gcs_urls.keys() if "safetensors" in k][0]
+    return gcs_model_url
 
 if __name__ == "__main__":
     try:

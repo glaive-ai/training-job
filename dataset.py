@@ -16,7 +16,7 @@ def tokenize_sft_data(data : List[Dict],
                       ignore_index : int = -100,
                       prompt_key : str ='prompt',
                       response_key : str ='response',
-                      max_seq_len : int = 2048):
+                      max_seq_len : int = 1900):
     """Tokenize the sft data"""
     input_ids, labels, response_len = list(), list(), list()
     for i, example in enumerate(data):

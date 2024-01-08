@@ -27,6 +27,8 @@ DEFAULT_UNK_TOKEN = "<unk>"
 
 output_dir = 'output'
 os.makedirs(output_dir, exist_ok=True)
+ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
+os.makedirs(ckpt_dir, exist_ok=True)
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -268,7 +270,6 @@ def train(model_args, data_args, training_args):
                     # only save best model (i.e., early stopping)
                     if val_loss < best_val_loss:
                         ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
-                        os.makedirs(ckpt_dir, exist_ok=True)
                         peft_model.save_pretrained(ckpt_dir)
                         best_val_loss = val_loss
             i+=1

@@ -111,10 +111,10 @@ class DataCollatorForSFTDataset(object):
         labels = [example['labels'] for example in examples]
         input_ids = torch.nn.utils.rnn.pad_sequence(
             input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id
-        ).to(self.device)
+        )
         labels = torch.nn.utils.rnn.pad_sequence(
             labels, batch_first=True, padding_value=self.ignore_index
-        ).to(self.device)
+        )
         response_len = [example['response_len'] for example in examples]
         return dict(
             input_ids=input_ids,

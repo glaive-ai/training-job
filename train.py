@@ -128,7 +128,7 @@ def smart_tokenizer_and_embedding_resize(
 
 def eval_loop(model, dataloader, logger):
     model.eval()
-    log = dict(loss=0.0, num_response_tokens=0)
+    log = 0.0, 0 # loss, num_response_tokens
 
     with torch.no_grad():
         for batch in dataloader:
@@ -139,10 +139,11 @@ def eval_loop(model, dataloader, logger):
                                      batch['labels'], 
                                      reduction='sum',
                                      ignore_index=IGNORE_INDEX)
-            log['loss'] += loss.item()
-            log['num_response_tokens'] += sum(batch['response_len'])
-        logger.info(f"val loss: {log['loss']} toks: {log['num_response_tokens']}")
-    return log['loss']/log['num_response_tokens']
+            log[0] += loss.item()
+            log[1] += sum(batch['response_len'])
+        logger.info(f"val loss: {log[0]} toks: {log[1]}")
+        torch.distributed.all_reduce(log, op=torch.distributed.ReduceOp.SUM)
+    return log[0]/log[1]
 
 
 def train(model_args, data_args, training_args):
@@ -265,7 +266,8 @@ def train(model_args, data_args, training_args):
     training_dataloader = DataLoader(train_dataset, 
                                      batch_size=training_args.per_device_train_batch_size,
                                      sampler=train_dist_sampler,
-                                     collate_fn=collator_fn)
+                                     collate_fn=collator_fn,
+                                     pin_memory=True)
     val_dist_sampler = DistributedSampler(val_dataset, 
                                       rank=rank,
                                       num_replicas=world_size,
@@ -273,7 +275,8 @@ def train(model_args, data_args, training_args):
     val_dataloader = DataLoader(val_dataset, 
                                 batch_size=training_args.per_device_train_batch_size,
                                 sampler=val_dist_sampler,
-                                collate_fn=collator_fn)                                 
+                                collate_fn=collator_fn,
+                                pin_memory=True)                                 
     optimizer = torch.optim.AdamW(model.parameters(), 
                                   lr=training_args.learning_rate)
     if training_args.enable_fsdp:
@@ -283,7 +286,7 @@ def train(model_args, data_args, training_args):
 
     i = 0
     step = 0
-    log = dict(loss=0.0, num_response_tokens=0)
+    log = [0.0, 0] # loss, num_response_tokens 
     best_val_loss = 1e10
 
     logger.info("Start training...")
@@ -291,6 +294,8 @@ def train(model_args, data_args, training_args):
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
             logger.info(batch['input_ids'].shape)
+            for key in batch:
+                batch[key].to('cuda')
             model.train()
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = model(input_ids=batch['input_ids'], 
@@ -300,8 +305,8 @@ def train(model_args, data_args, training_args):
                                      reduction='sum',
                                      ignore_index=IGNORE_INDEX)
             
-            log['loss'] += loss.item()
-            log['num_response_tokens'] += sum(batch['response_len'])
+            log[0] += loss.item()
+            log[1] += sum(batch['response_len'])
 
             scaler.scale(loss).backward()
             
@@ -312,13 +317,14 @@ def train(model_args, data_args, training_args):
                 step += 1
 
                 if step % training_args.logging_steps == 0:
-                    tmp_loss = log['loss']/log['num_response_tokens']
+                    torch.distributed.all_reduce(log, op=torch.distributed.ReduceOp.SUM)
+                    tmp_loss = log[0]/log[1]
                     logger.info(f"Step {step} - train-loss: {tmp_loss}")
                     if rank == 0:
                         wandb.log(dict(train=dict(
                                         loss=tmp_loss)), 
                                         step=step)
-                    log = dict(loss=0.0, num_response_tokens=0)
+                    log = [0.0, 0]
 
                 if step % training_args.eval_steps == 0:
                     val_loss = eval_loop(model, val_dataloader, logger)
@@ -329,9 +335,6 @@ def train(model_args, data_args, training_args):
                                         step=step)
                     logger.info(f"Step {step} - val-loss: {val_loss}")
                     # only save best model (i.e., early stopping)
-
-                    if training_args.enable_fsdp:
-                        torch.distributed.barrier()
 
                     if val_loss < best_val_loss:
                         ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")

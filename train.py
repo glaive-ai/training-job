@@ -126,12 +126,14 @@ def smart_tokenizer_and_embedding_resize(
         input_embeddings[-num_new_tokens:] = input_embeddings_avg
         output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
-def eval_loop(model, dataloader, logger):
+def eval_loop(model, dataloader, logger, local_rank):
     model.eval()
-    log = 0.0, 0 # loss, num_response_tokens
+    fsdp_loss = torch.zeros(2).to(local_rank) # loss, num_response_tokens
 
     with torch.no_grad():
         for batch in dataloader:
+            for key in ['input_ids', 'attention_mask', 'labels']:
+                batch[key] = batch[key].to(local_rank)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = model(input_ids=batch['input_ids'], 
                                 attention_mask=batch['attention_mask'])
@@ -139,11 +141,10 @@ def eval_loop(model, dataloader, logger):
                                      batch['labels'], 
                                      reduction='sum',
                                      ignore_index=IGNORE_INDEX)
-            log[0] += loss.item()
-            log[1] += sum(batch['response_len'])
-        logger.info(f"val loss: {log[0]} toks: {log[1]}")
-        torch.distributed.all_reduce(log, op=torch.distributed.ReduceOp.SUM)
-    return log[0]/log[1]
+            fsdp_loss[0] += loss.item()
+            fsdp_loss[1] += sum(batch['response_len'])
+        torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
+    return fsdp_loss[0]/fsdp_loss[1]
 
 
 def train(model_args, data_args, training_args):
@@ -156,6 +157,7 @@ def train(model_args, data_args, training_args):
         torch.cuda.set_device(local_rank)
     else:
         rank = 0
+        local_rank = 0
         world_size = 1
 
     output_dir = 'output'
@@ -286,7 +288,7 @@ def train(model_args, data_args, training_args):
 
     i = 0
     step = 0
-    log = [0.0, 0] # loss, num_response_tokens 
+    fsdp_loss = torch.zeros(2).to(local_rank) # loss, num_response_tokens 
     best_val_loss = 1e10
 
     logger.info("Start training...")
@@ -294,8 +296,8 @@ def train(model_args, data_args, training_args):
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
             logger.info(batch['input_ids'].shape)
-            for key in batch:
-                batch[key].to('cuda')
+            for key in ['input_ids', 'attention_mask', 'labels']:
+                batch[key] = batch[key].to(local_rank)
             model.train()
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = model(input_ids=batch['input_ids'], 
@@ -305,8 +307,8 @@ def train(model_args, data_args, training_args):
                                      reduction='sum',
                                      ignore_index=IGNORE_INDEX)
             
-            log[0] += loss.item()
-            log[1] += sum(batch['response_len'])
+            fsdp_loss[0] += loss.item()
+            fsdp_loss[1] += sum(batch['response_len'])
 
             scaler.scale(loss).backward()
             
@@ -317,17 +319,18 @@ def train(model_args, data_args, training_args):
                 step += 1
 
                 if step % training_args.logging_steps == 0:
-                    torch.distributed.all_reduce(log, op=torch.distributed.ReduceOp.SUM)
-                    tmp_loss = log[0]/log[1]
+                    torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
+                    tmp_loss = fsdp_loss[0]/fsdp_loss[1]
                     logger.info(f"Step {step} - train-loss: {tmp_loss}")
                     if rank == 0:
                         wandb.log(dict(train=dict(
                                         loss=tmp_loss)), 
                                         step=step)
-                    log = [0.0, 0]
+                    fsdp_loss[0] = 0.0
+                    fsdp_loss[1] = 0
 
                 if step % training_args.eval_steps == 0:
-                    val_loss = eval_loop(model, val_dataloader, logger)
+                    val_loss = eval_loop(model, val_dataloader, logger, local_rank)
                     model.train()
                     if rank == 0:
                         wandb.log(dict(valid=dict(
@@ -372,7 +375,7 @@ if __name__ == "__main__":
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
         train(model_args, data_args, training_args)
     except Exception as e:
-        callback_completion(data_args.callback_url,None,True,str(e))
+        glaive_utils.callback_completion(data_args.callback_url,None,True,str(e))
     
     # python train.py --model_id test --gcs_data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"
     # python train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 2 --gradient_accumulation_steps 4

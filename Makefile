@@ -20,4 +20,4 @@ delete-job:
 
 .PHONY: launch-local
 launch-local:
-	sudo docker run --gpus all --rm -it --entrypoint bash -e GOOGLE_APPLICATION_CREDENTIALS=gcs.json -e WANDB_API_KEY=a07f9a332409243f4cd7eecffd733b9297f9436e -v $(shell pwd):/workspace $(IMAGE_NAME) 
+	sudo docker run --gpus '"device=0,1"'  --rm -it --entrypoint bash -e GOOGLE_APPLICATION_CREDENTIALS=gcs.json -e WANDB_API_KEY=a07f9a332409243f4cd7eecffd733b9297f9436e -v $(shell pwd):/workspace $(IMAGE_NAME) 

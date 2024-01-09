@@ -3,7 +3,7 @@ import logging
 import torch
 import transformers
 import datasets
-import utils
+import glaive_utils
 
 from dataclasses import dataclass
 from torch.utils.data import Dataset
@@ -56,7 +56,7 @@ class SFTDataset(Dataset):
         self.data_path = data_path
         self.ignore_index = ignore_index
         logger.info("Loading data...")
-        self.loaded_dataset = utils.jload(data_path)
+        self.loaded_dataset = glaive_utils.jload(data_path)
         logger.info("Tokenizing data...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)
@@ -84,7 +84,7 @@ class HF_SFTDataset(Dataset):
         self.data_path = data_path
         self.ignore_index = ignore_index
         logger.info("Loading HF dataset...")
-        self.loaded_dataset = datasets.load_dataset(data_path, split=split)
+        self.loaded_dataset = datasets.load_dataset(data_path, split=split).select(indices=range(3000))
         logger.info("Tokenize dataset...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)

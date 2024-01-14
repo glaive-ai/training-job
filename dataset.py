@@ -19,6 +19,8 @@ def tokenize_sft_data(data : List[Dict],
                       max_seq_len : int = 1900):
     """Tokenize the sft data"""
     input_ids, labels, response_len = list(), list(), list()
+    logger.info(tokenizer.model_max_length)
+
     for i, example in enumerate(data):
         if any([key not in example for key in (prompt_key, response_key)]):
             raise ValueError(f'{prompt_key} or {response_key} not found in {i}-th example')
@@ -26,13 +28,11 @@ def tokenize_sft_data(data : List[Dict],
         ex_input_ids = tokenizer(instruction,
                                  return_tensors="pt",
                                  padding="longest",
-                                 max_length=tokenizer.model_max_length,
-                                 truncation=True).input_ids[0]
+                                 max_length=tokenizer.model_max_length).input_ids[0]
         ex_prompt_len = len(tokenizer(example[prompt_key],
                                       return_tensors="pt",
                                       padding="longest",
-                                      max_length=tokenizer.model_max_length,
-                                      truncation=True).input_ids[0])
+                                      max_length=tokenizer.model_max_length).input_ids[0])
         ex_response_len = len(ex_input_ids) - ex_prompt_len
         ex_labels = copy.deepcopy(ex_input_ids)
         ex_labels[:ex_prompt_len] = ignore_index
@@ -84,7 +84,7 @@ class HF_SFTDataset(Dataset):
         self.data_path = data_path
         self.ignore_index = ignore_index
         logger.info("Loading HF dataset...")
-        self.loaded_dataset = datasets.load_dataset(data_path, split=split).select(indices=range(3000))
+        self.loaded_dataset = datasets.load_dataset(data_path, split=split)
         logger.info("Tokenize dataset...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)

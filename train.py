@@ -7,7 +7,6 @@ import glaive_utils
 import torch
 import time
 import transformers
-import wandb
 import logging
 
 
@@ -26,6 +25,7 @@ from typing import Dict, Optional, Sequence
 from urllib.parse import urlparse
 from wrap_policy import fsdp_auto_wrap_policy
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 IGNORE_INDEX = -100
 DEFAULT_PAD_TOKEN = "<pad>"
@@ -194,11 +194,6 @@ def train(model_args, data_args, training_args):
         
     if training_args.enable_fsdp:
         torch.distributed.barrier()
-
-    if rank == 0:
-        wandb.init(project="train-lora-job", 
-                    tags=[model_args.model_id],
-                    dir=output_dir)
     
     logger.info("Loading the model...")
     start_model_load = time.time()
@@ -206,10 +201,6 @@ def train(model_args, data_args, training_args):
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path
     ).to(device)
-
-    if rank == 0:
-        wandb.log(dict(model_load_time=int(time.time() - start_model_load)))
-
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
@@ -238,7 +229,10 @@ def train(model_args, data_args, training_args):
     model = get_peft_model(model, lora_config)
 
     if training_args.enable_fsdp:
-        my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, MistralDecoderLayer)
+        if model_args.model_name_or_path == 'deepseek-ai/deepseek-coder-6.7b-base':
+            my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, LlamaDecoderLayer)
+        elif model_args.model_name_or_path == 'mistralai/Mistral-7B-v0.1':
+            my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, MistralDecoderLayer)
         model = FSDP(model,
                      sharding_strategy=ShardingStrategy.NO_SHARD,
                      auto_wrap_policy=my_auto_wrapping_policy,
@@ -322,20 +316,13 @@ def train(model_args, data_args, training_args):
                     torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
                     tmp_loss = fsdp_loss[0]/fsdp_loss[1]
                     logger.info(f"Step {step} - train-loss: {tmp_loss}")
-                    if rank == 0:
-                        wandb.log(dict(train=dict(
-                                        loss=tmp_loss)), 
-                                        step=step)
                     fsdp_loss[0] = 0.0
                     fsdp_loss[1] = 0
 
                 if step % training_args.eval_steps == 0:
                     val_loss = eval_loop(model, val_dataloader, logger, local_rank)
                     model.train()
-                    if rank == 0:
-                        wandb.log(dict(valid=dict(
-                                        loss=val_loss)), 
-                                        step=step)
+
                     logger.info(f"Step {step} - val-loss: {val_loss}")
                     # only save best model (i.e., early stopping)
 
@@ -349,9 +336,7 @@ def train(model_args, data_args, training_args):
             i+=1
     
     end_training = time.time()
-    if rank == 0:
-        wandb.log(dict(training_time=int(end_training - start_training)))
-
+   
     if rank == 0 :
         gcs_urls = dict()
         for file in os.listdir(ckpt_dir):
@@ -381,3 +366,5 @@ if __name__ == "__main__":
     # python train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 2 --gradient_accumulation_steps 4
         
     # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --logging_steps 1 --eval_steps 100 --enable_fsdp
+    # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_name_or_path deepseek-ai/deepseek-coder-6.7b-base --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --logging_steps 1 --eval_steps 100 --enable_fsdp
+    # deepseek-ai/deepseek-coder-6.7b-base

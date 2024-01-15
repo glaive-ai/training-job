@@ -78,13 +78,17 @@ class HF_SFTDataset(Dataset):
                  prompt_key : str = 'prompt',
                  response_key : str = 'response',
                  split : str = "train",
-                 ignore_index : int = -100):
+                 ignore_index : int = -100,
+                 max_examples : int = None):
         super(HF_SFTDataset, self).__init__()
         self.tokenizer = tokenizer
         self.data_path = data_path
         self.ignore_index = ignore_index
+        self.max_examples = max_examples
         logger.info("Loading HF dataset...")
         self.loaded_dataset = datasets.load_dataset(data_path, split=split)
+        if max_examples is not None:
+            self.loaded_dataset = self.loaded_dataset.select(indices=range(max_examples))
         logger.info("Tokenize dataset...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)

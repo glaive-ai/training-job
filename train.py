@@ -23,7 +23,7 @@ from torch.distributed.fsdp import MixedPrecision, ShardingStrategy
 from torch.distributed.fsdp.sharded_grad_scaler import ShardedGradScaler
 from typing import Dict, Optional, Sequence
 from urllib.parse import urlparse
-from wrap_policy import fsdp_auto_wrap_policy
+from wrap_policy import peft_wrap_policy, fsdp_wrap_policy
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
@@ -36,6 +36,7 @@ DEFAULT_UNK_TOKEN = "<unk>"
 class ModelArguments:
     model_id: str = field(default=None, metadata={"help": "Model ID for tracking."})
     model_name_or_path: str = field(default="mistralai/Mistral-7B-v0.1")
+    use_peft : Optional[bool] = field(default=True)
     lora_r: Optional[int] = field(default=8)
     lora_alpha: Optional[float] = field(default=32)
     lora_dropout: Optional[float] = field(default=0.0)
@@ -48,6 +49,8 @@ class DataArguments:
     prompt_key: Optional[str] = field(default="prompt", metadata={"help": "Column of the prompt in the dataset"})
     response_key: Optional[str] = field(default="response", metadata={"help": "Column of the response in the dataset"})
     callback_url: Optional[str] = field(default=None, metadata={"help": "URL for callback notifications."})
+    max_examples: Optional[int] = field(default=None, metadata={"help": "Max number of examples to load. This feature might be helpful with debugging."})
+
 
 bfSixteen = MixedPrecision(
     param_dtype=torch.bfloat16,
@@ -100,9 +103,9 @@ class TrainingArguments:
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     use_amp : Optional[bool] = field(default=True, 
-                                     metadata={"help": "use mixed precision?"})
+        metadata={"help": "use mixed precision?"})
     enable_fsdp : Optional[bool] = field(default=True, 
-                                     metadata={"help": "use fully sharded data parallel?"})
+        metadata={"help": "use fully sharded data parallel?"})
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -196,7 +199,6 @@ def train(model_args, data_args, training_args):
         torch.distributed.barrier()
     
     logger.info("Loading the model...")
-    start_model_load = time.time()
     device = 'cuda'
     model = transformers.AutoModelForCausalLM.from_pretrained(
         model_args.model_name_or_path
@@ -222,19 +224,25 @@ def train(model_args, data_args, training_args):
         tokenizer=tokenizer,
         model=model,
     )
-
-    lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, 
-                             r=model_args.lora_r,
-                             lora_alpha=model_args.lora_alpha)
-    model = get_peft_model(model, lora_config)
+    if model_args.use_peft:
+        lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, 
+                                r=model_args.lora_r,
+                                lora_alpha=model_args.lora_alpha)
+        model = get_peft_model(model, lora_config)
 
     if training_args.enable_fsdp:
+        transformer_layer = LlamaDecoderLayer
         if model_args.model_name_or_path == 'deepseek-ai/deepseek-coder-6.7b-base':
-            my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, LlamaDecoderLayer)
+            transformer_layer = LlamaDecoderLayer
         elif model_args.model_name_or_path == 'mistralai/Mistral-7B-v0.1':
-            my_auto_wrapping_policy = fsdp_auto_wrap_policy(model, MistralDecoderLayer)
+            transformer_layer = MistralDecoderLayer
+        
+        if model_args.use_peft:
+            my_auto_wrapping_policy = peft_wrap_policy(transformer_layer)
+        else:
+            my_auto_wrapping_policy = fsdp_wrap_policy(transformer_layer)
         model = FSDP(model,
-                     sharding_strategy=ShardingStrategy.NO_SHARD,
+                     sharding_strategy=ShardingStrategy.FULL_SHARD,
                      auto_wrap_policy=my_auto_wrapping_policy,
                      mixed_precision=bfSixteen,
                      device_id=torch.cuda.current_device(),
@@ -250,7 +258,8 @@ def train(model_args, data_args, training_args):
     else: 
         dataset = HF_SFTDataset(tokenizer=tokenizer, data_path=data_args.hf_data_path, 
                                 prompt_key=data_args.prompt_key, response_key=data_args.response_key,
-                                ignore_index=IGNORE_INDEX)
+                                ignore_index=IGNORE_INDEX,
+                                max_examples=data_args.max_examples)
     train_dataset, val_dataset = random_split(dataset, [0.97, 0.03])
 
     collator_fn = DataCollatorForSFTDataset(tokenizer=tokenizer, device=device, 
@@ -289,7 +298,7 @@ def train(model_args, data_args, training_args):
     log_time = time.time()
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
-            logger.info(batch['input_ids'].shape)
+            # logger.info(batch['input_ids'].shape)
             for key in ['input_ids', 'attention_mask', 'labels']:
                 batch[key] = batch[key].to(local_rank)
             model.train()

@@ -12,11 +12,11 @@ push: build
 
 .PHONY: launch-job
 launch-job: 
-	envsubst < configs/mistral7B-oss-instruct.yaml | kubectl apply -f -
+	envsubst < configs/deepseek7B-oss-instruct.yaml | kubectl apply -f -
 
 .PHONY: delete-job
 delete-job:
-	envsubst < configs/mistral7B-oss-instruct.yaml | kubectl delete -f -
+	envsubst < configs/deepseek7B-oss-instruct.yaml | kubectl delete -f -
 
 .PHONY: launch-local
 launch-local:

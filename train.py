@@ -286,7 +286,7 @@ def train(model_args, data_args, training_args):
     best_val_loss = 1e10
 
     logger.info("Start training...")
-    start_training = time.time()
+    log_time = time.time()
     for epoch in range(training_args.num_train_epochs):
         for batch in training_dataloader:
             logger.info(batch['input_ids'].shape)
@@ -315,9 +315,13 @@ def train(model_args, data_args, training_args):
                 if step % training_args.logging_steps == 0:
                     torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
                     tmp_loss = fsdp_loss[0]/fsdp_loss[1]
-                    logger.info(f"Step {step} - train-loss: {tmp_loss}")
+                    log_time_elapsed = time.time() - log_time
+                    processed_samples = training_args.logging_steps * training_args.gradient_accumulation_steps * training_args.per_device_train_batch_size * world_size
+                    samples_per_sec = processed_samples/log_time_elapsed
+                    logger.info(f"Step {step} - train-loss: {tmp_loss}, samples_per_sec: {samples_per_sec}")
                     fsdp_loss[0] = 0.0
                     fsdp_loss[1] = 0
+                    log_time = time.time()
 
                 if step % training_args.eval_steps == 0:
                     val_loss = eval_loop(model, val_dataloader, logger, local_rank)
@@ -335,10 +339,10 @@ def train(model_args, data_args, training_args):
                         torch.distributed.barrier()
             i+=1
     
-    end_training = time.time()
-   
+    gcs_urls = dict()
+    gcs_urls["log.txt"] = glaive_utils.upload_blob(log_file_path, 
+        os.path.join(model_args.model_id, f"{rank}.log"))
     if rank == 0 :
-        gcs_urls = dict()
         for file in os.listdir(ckpt_dir):
             filename = os.path.basename(file)
             gcs_urls[filename] = glaive_utils.upload_blob(
@@ -347,9 +351,7 @@ def train(model_args, data_args, training_args):
         gcs_urls["args.json"] = glaive_utils.upload_blob(
             os.path.join(output_dir, "args.json"), 
             os.path.join(model_args.model_id, "args.json"))
-        gcs_urls["log.txt"] = glaive_utils.upload_blob(os.path.join(output_dir, "log.txt"), 
-            os.path.join(model_args.model_id, "log.txt"))
-    
+        
         gcs_model_url = [k for k in gcs_urls.keys() if "safetensors" in k][0]
         if data_args.callback_url is not None: 
              glaive_utils.callback_completion(data_args.callback_url,gcs_model_url,False)

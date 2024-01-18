@@ -10,14 +10,14 @@ build:
 push: build
 	sudo docker push $(IMAGE_NAME)
 
-.PHONY: launch-job
+.PHONY: launch-job 
 launch-job: 
-	envsubst < configs/deepseek7B-oss-instruct.yaml | kubectl apply -f -
+	envsubst < $(config) | kubectl apply -f -
 
 .PHONY: delete-job
 delete-job:
-	envsubst < configs/deepseek7B-oss-instruct.yaml | kubectl delete -f -
+	envsubst < $(config)  | kubectl delete -f -
 
-.PHONY: launch-local
-launch-local:
-	sudo docker run --gpus '"device=4,5,6,7"'  --rm -it --entrypoint bash -e GOOGLE_APPLICATION_CREDENTIALS=gcs.json -e WANDB_API_KEY=a07f9a332409243f4cd7eecffd733b9297f9436e -v $(shell pwd):/workspace $(IMAGE_NAME) 
+.PHONY: launch-docker
+launch-docker:
+	sudo docker run --gpus '"device=0,1,2,3,4,5,6,7"'  --rm -it --entrypoint bash -e GOOGLE_APPLICATION_CREDENTIALS=gcs.json -e WANDB_API_KEY=a07f9a332409243f4cd7eecffd733b9297f9436e -v $(shell pwd):/workspace $(IMAGE_NAME) 

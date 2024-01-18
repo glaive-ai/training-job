@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, asdict
 from dataset import HF_SFTDataset, SFTDataset, DataCollatorForSFTDataset
 from glaive_utils import folder_exists_on_gcs, GLAIVE_BUCKET
 from logger_config import setup_logging
+from fsdp_checkpointing import apply_fsdp_checkpointing
 from peft import get_peft_config, get_peft_model, LoraConfig, TaskType
 from torch.utils.data import DataLoader, random_split
 from torch.utils.data import DistributedSampler
@@ -102,10 +103,10 @@ class TrainingArguments:
         default=None,
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
-    use_amp : Optional[bool] = field(default=True, 
-        metadata={"help": "use mixed precision?"})
-    enable_fsdp : Optional[bool] = field(default=True, 
+    use_fsdp : Optional[bool] = field(default=True, 
         metadata={"help": "use fully sharded data parallel?"})
+    use_activation_checkpointing : Optional[bool] = field(default=True, 
+        metadata={"help": "use activation checkpointing to reduce GPU memory footprint"})
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -151,7 +152,7 @@ def eval_loop(model, dataloader, logger, local_rank):
 
 
 def train(model_args, data_args, training_args):
-    if training_args.enable_fsdp:
+    if training_args.use_fsdp:
         torch.distributed.init_process_group("nccl")
         # torchrun specific
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -165,9 +166,10 @@ def train(model_args, data_args, training_args):
 
     output_dir = 'output'
     os.makedirs(output_dir, exist_ok=True)
+    ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
 
     log_file_path = os.path.join(output_dir, '0.log')
-    if training_args.enable_fsdp:
+    if training_args.use_fsdp:
         log_file_path = os.path.join(output_dir, str(rank) + '.log')
 
     setup_logging(log_file_path, rank)
@@ -195,7 +197,7 @@ def train(model_args, data_args, training_args):
                 file.write(response.text)
                 data_args.local_data_path = downloaded_filename
         
-    if training_args.enable_fsdp:
+    if training_args.use_fsdp:
         torch.distributed.barrier()
     
     logger.info("Loading the model...")
@@ -230,7 +232,7 @@ def train(model_args, data_args, training_args):
                                 lora_alpha=model_args.lora_alpha)
         model = get_peft_model(model, lora_config)
 
-    if training_args.enable_fsdp:
+    if training_args.use_fsdp:
         transformer_layer = LlamaDecoderLayer
         if model_args.model_name_or_path == 'deepseek-ai/deepseek-coder-6.7b-base':
             transformer_layer = LlamaDecoderLayer
@@ -241,12 +243,20 @@ def train(model_args, data_args, training_args):
             my_auto_wrapping_policy = peft_wrap_policy(transformer_layer)
         else:
             my_auto_wrapping_policy = fsdp_wrap_policy(transformer_layer)
+        
         model = FSDP(model,
-                     sharding_strategy=ShardingStrategy.FULL_SHARD,
-                     auto_wrap_policy=my_auto_wrapping_policy,
-                     mixed_precision=bfSixteen,
-                     device_id=torch.cuda.current_device(),
-                     limit_all_gathers=True)
+            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            auto_wrap_policy=my_auto_wrapping_policy,
+            mixed_precision=bfSixteen,
+            device_id=torch.cuda.current_device(),
+            limit_all_gathers=True)
+        
+    if training_args.use_activation_checkpointing:
+        if training_args.use_fsdp:
+            apply_fsdp_checkpointing(model, transformer_layer)
+        else: 
+            raise NotImplementedError("TODO")
+        
 
     logger.info("Loading the data...")
     if data_args.local_data_path is not None:
@@ -284,7 +294,7 @@ def train(model_args, data_args, training_args):
                                 pin_memory=True)                                 
     optimizer = torch.optim.AdamW(model.parameters(), 
                                   lr=training_args.learning_rate)
-    if training_args.enable_fsdp:
+    if training_args.use_fsdp:
         scaler = ShardedGradScaler()
     else:
         scaler = torch.cuda.amp.GradScaler()
@@ -304,7 +314,7 @@ def train(model_args, data_args, training_args):
             model.train()
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 output = model(input_ids=batch['input_ids'], 
-                                    attention_mask=batch['attention_mask'])
+                        attention_mask=batch['attention_mask'])
                 loss = cross_entropy(output.logits.transpose(1, 2), 
                                      batch['labels'], 
                                      reduction='sum',
@@ -340,18 +350,17 @@ def train(model_args, data_args, training_args):
                     # only save best model (i.e., early stopping)
 
                     if val_loss < best_val_loss:
-                        ckpt_dir = os.path.join(output_dir, f"CHECKPOINT")
                         model.save_pretrained(ckpt_dir)
                         best_val_loss = val_loss
                     
-                    if training_args.enable_fsdp:
+                    if training_args.use_fsdp:
                         torch.distributed.barrier()
             i+=1
     
     gcs_urls = dict()
     gcs_urls["log.txt"] = glaive_utils.upload_blob(log_file_path, 
         os.path.join(model_args.model_id, f"{rank}.log"))
-    if rank == 0 :
+    if rank == 0:
         for file in os.listdir(ckpt_dir):
             filename = os.path.basename(file)
             gcs_urls[filename] = glaive_utils.upload_blob(
@@ -376,6 +385,6 @@ if __name__ == "__main__":
     # python train.py --model_id test --gcs_data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"
     # python train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 2 --gradient_accumulation_steps 4
         
-    # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --logging_steps 1 --eval_steps 100 --enable_fsdp
-    # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_name_or_path deepseek-ai/deepseek-coder-6.7b-base --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --logging_steps 1 --eval_steps 100 --enable_fsdp
+    # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 4 --gradient_accumulation_steps 2 --logging_steps 1 --eval_steps 100 --use_fsdp --max_examples 1000 --use_peft False
+    # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_name_or_path deepseek-ai/deepseek-coder-6.7b-base --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 1 --gradient_accumulation_steps 4 --logging_steps 1 --eval_steps 100 --use_fsdp
     # deepseek-ai/deepseek-coder-6.7b-base

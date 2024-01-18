@@ -17,16 +17,18 @@ spec:
               value: a07f9a332409243f4cd7eecffd733b9297f9436e
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: gcs.json
-          command: ["torchrun", "--nnodes", "1", "--nproc_per_node",  "6", 
-                    "train.py", "--model_id", "deepseek7B-OSS-instruct",
+          command: ["torchrun", "--nnodes", "1", "--nproc_per_node",  "8", 
+                    "train.py", "--model_id", "DSC7B-magicoder-lora",
                     "--model_name_or_path", "deepseek-ai/deepseek-coder-6.7b-base",
                     "--hf_data_path", "ise-uiuc/Magicoder-OSS-Instruct-75K",
                     "--prompt_key", "problem", "--response_key", "solution",
-                    "--num_train_epochs",  "2", "--per_device_train_batch_size", "1",
-                    "--gradient_accumulation_steps", "4", 
+                    "--num_train_epochs",  "2", "--per_device_train_batch_size", "8",
+                    "--gradient_accumulation_steps", "2", 
                     "--logging_steps", "10",
                     "--eval_steps", "1000",
-                    "--enable_fsdp"
+                    "--use_fsdp", "True",
+                    "--use_peft", "True", 
+                    "--use_activation_checkpointing", "True"
                    ]
           resources:
             limits:

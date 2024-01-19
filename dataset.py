@@ -50,13 +50,22 @@ class SFTDataset(Dataset):
                  tokenizer: transformers.PreTrainedTokenizer, 
                  prompt_key : str = 'prompt',
                  response_key : str = 'response',
-                 ignore_index : int = -100):
+                 ignore_index : int = -100,
+                 max_examples : int = None):
         super(SFTDataset, self).__init__()
         self.tokenizer = tokenizer
         self.data_path = data_path
         self.ignore_index = ignore_index
         logger.info("Loading data...")
-        self.loaded_dataset = glaive_utils.jload(data_path)
+        if data_path.endswith('json'):
+            self.loaded_dataset = glaive_utils.load_json(data_path)
+        elif data_path.endswith('jsonl'):
+            self.loaded_dataset = glaive_utils.load_jsonl(data_path)
+        else:
+            raise ValueError('Unsupported data format')
+        
+        if max_examples is not None:
+            self.loaded_dataset = self.loaded_dataset[:max_examples]
         logger.info("Tokenizing data...")
         self.input_ids, self.labels, self.response_len = tokenize_sft_data(self.loaded_dataset, self.tokenizer, 
                                                                            ignore_index, prompt_key, response_key)

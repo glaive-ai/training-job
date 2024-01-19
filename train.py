@@ -45,7 +45,8 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     local_data_path: Optional[str] = field(default=None, metadata={"help": "Local path to the training data."})
-    gcs_data_url: Optional[str] = field(default=None, metadata={"help": "GCS URL to download the training data."})
+    data_url: Optional[str] = field(default=None, metadata={"help": "URL to download the training data."})
+    gcs_data_path: Optional[str] = field(default=None, metadata={"help": "GCS data path to download the training data."})
     hf_data_path: Optional[str] = field(default=None, metadata={"help": "HF data path"})
     prompt_key: Optional[str] = field(default="prompt", metadata={"help": "Column of the prompt in the dataset"})
     response_key: Optional[str] = field(default="response", metadata={"help": "Column of the response in the dataset"})
@@ -83,14 +84,6 @@ class TrainingArguments:
             )
         },
     )
-    save_steps: float = field(
-        default=10,
-        metadata={
-            "help": (
-                "Save checkpoint every X updates steps.  "
-            )
-        },
-    )
     eval_steps: int = field(
         default=10,
         metadata={
@@ -107,6 +100,7 @@ class TrainingArguments:
         metadata={"help": "use fully sharded data parallel?"})
     use_activation_checkpointing : Optional[bool] = field(default=True, 
         metadata={"help": "use activation checkpointing to reduce GPU memory footprint"})
+    fsdp_sharding_strategy : Optional[str] = field(default='full_shard')
 
 def smart_tokenizer_and_embedding_resize(
     special_tokens_dict: Dict,
@@ -147,8 +141,7 @@ def eval_loop(model, dataloader, logger, local_rank):
                                      ignore_index=IGNORE_INDEX)
             fsdp_loss[0] += loss.item()
             fsdp_loss[1] += sum(batch['response_len'])
-        torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
-    return fsdp_loss[0]/fsdp_loss[1]
+    return fsdp_loss
 
 
 def train(model_args, data_args, training_args):
@@ -185,17 +178,22 @@ def train(model_args, data_args, training_args):
                                 training_args=asdict(training_args))
             json.dump(args_dict, f)
 
-    if data_args.local_data_path is None and data_args.gcs_data_url is None and data_args.hf_data_path is None:
-        raise ValueError("Must specify either `local_data_path`, `gcs_data_url` or `hf_data_path`")
+    if data_args.local_data_path is None and data_args.data_url is None and \
+       data_args.gcs_data_path is None and data_args.hf_data_path:
+        raise ValueError("Must specify either `local_data_path`, `data_url`, `gcs_data_path` or `hf_data_path`")
     
     if rank == 0:
-        if data_args.gcs_data_url is not None:
-            logger.info(f"Downloading `{data_args.gcs_data_url}` to `data.jsonl`")
-            response = requests.get(data_args.gcs_data_url)
-            downloaded_filename = os.path.basename(urlparse(data_args.gcs_data_url).path) 
+        if data_args.data_url is not None:
+            logger.info(f"Downloading `{data_args.data_url}`")
+            response = requests.get(data_args.data_url)
+            downloaded_filename = os.path.basename(urlparse(data_args.data_url).path) 
             with open(downloaded_filename, 'w') as file:
                 file.write(response.text)
                 data_args.local_data_path = downloaded_filename
+        if data_args.gcs_data_path is not None:
+            logger.info(f"Downloading `{data_args.gcs_data_path}`")
+            response = glaive_utils.download_file('glaive-data', data_args.gcs_data_path, data_args.gcs_data_path)            
+            data_args.local_data_path = data_args.gcs_data_path
         
     if training_args.use_fsdp:
         torch.distributed.barrier()
@@ -243,9 +241,14 @@ def train(model_args, data_args, training_args):
             my_auto_wrapping_policy = peft_wrap_policy(transformer_layer)
         else:
             my_auto_wrapping_policy = fsdp_wrap_policy(transformer_layer)
+
+        if training_args.fsdp_sharding_strategy == 'full_shard':
+            sharding_strategy = ShardingStrategy.FULL_SHARD
+        elif training_args.fsdp_sharding_strategy == 'no_shard':
+            sharding_strategy = ShardingStrategy.NO_SHARD
         
         model = FSDP(model,
-            sharding_strategy=ShardingStrategy.FULL_SHARD,
+            sharding_strategy=sharding_strategy,
             auto_wrap_policy=my_auto_wrapping_policy,
             mixed_precision=bfSixteen,
             device_id=torch.cuda.current_device(),
@@ -262,7 +265,8 @@ def train(model_args, data_args, training_args):
     if data_args.local_data_path is not None:
         dataset = SFTDataset(tokenizer=tokenizer, data_path=data_args.local_data_path, 
                              prompt_key=data_args.prompt_key, response_key=data_args.response_key,
-                             ignore_index=IGNORE_INDEX)
+                             ignore_index=IGNORE_INDEX,
+                             max_examples=data_args.max_examples)
         if data_args.hf_data_path is not None:
             logging.warning("Loading dataset from `local_data_path` and ignoring the HF dataset specified by `hf_data_path`")
     else: 
@@ -332,7 +336,8 @@ def train(model_args, data_args, training_args):
                 step += 1
 
                 if step % training_args.logging_steps == 0:
-                    torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
+                    if training_args.use_fsdp:
+                        torch.distributed.all_reduce(fsdp_loss, op=torch.distributed.ReduceOp.SUM)
                     tmp_loss = fsdp_loss[0]/fsdp_loss[1]
                     log_time_elapsed = time.time() - log_time
                     processed_samples = training_args.logging_steps * training_args.gradient_accumulation_steps * training_args.per_device_train_batch_size * world_size
@@ -343,7 +348,10 @@ def train(model_args, data_args, training_args):
                     log_time = time.time()
 
                 if step % training_args.eval_steps == 0:
-                    val_loss = eval_loop(model, val_dataloader, logger, local_rank)
+                    val_fsdp_loss = eval_loop(model, val_dataloader, logger, local_rank)
+                    if training_args.use_fsdp:
+                        torch.distributed.all_reduce(val_fsdp_loss, op=torch.distributed.ReduceOp.SUM)
+                    val_loss = val_fsdp_loss[0]/val_fsdp_loss[1]
                     model.train()
 
                     logger.info(f"Step {step} - val-loss: {val_loss}")
@@ -383,6 +391,8 @@ if __name__ == "__main__":
         glaive_utils.callback_completion(data_args.callback_url,None,True,str(e))
     
     # python train.py --model_id test --gcs_data_url "https://storage.googleapis.com/glaive-data/train_cc4ee6ee-6f39-44e4-9664-f79a8dc65904.jsonl?Expires=1703359938&GoogleAccessId=storage-admin%40glaive-393514.iam.gserviceaccount.com&Signature=hsTPzGuuntiQpT4lcr%2FU8n0KcPkbHK5HMeft5ek%2BZpTG%2Fley6t5MtIcDVZ%2FBH1%2BCfSbmYQH29%2FSmMxcPl1ewdPkseV5TqIHrPq%2F3ivkm3X4RqTk0kG7TqDe69rey1zC7SQozJWlIhpLL0hD6eIxf82tIhErH8e9qUekzIAxp2KDkRLTdZuwmpDnGvDiiCHqS%2FNXMh7kTuqSKSPOz9g3zsAP3iKdFT3uznUgCTcqhWSpDMNAQO0zxv%2FiTC0DP9HfnAwd2oViQsOn%2BbqF1EvmqjWaY6BFJnsziSGtlH%2BBmyOCzAaxNkfrFlOcmZDNZ8%2BIdl29DL2oYdg5M9xUodtMOgA%3D%3D"
+    # python train.py --model_id code_assist --gcs_data_path "glaive_code_assistant_v3.json" --use_fsdp False --per_device_train_batch_size 1 --use_peft True --use_activation_checkpointing False --prompt_key question --response_key answer --max_examples 1000
+        
     # python train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 2 --gradient_accumulation_steps 4
         
     # torchrun --nnodes 1 --nproc_per_node 2 train.py --model_id test_hf --hf_data_path ise-uiuc/Magicoder-OSS-Instruct-75K --prompt_key problem --response_key solution --num_train_epochs 2 --per_device_train_batch_size 4 --gradient_accumulation_steps 2 --logging_steps 1 --eval_steps 100 --use_fsdp --max_examples 1000 --use_peft False

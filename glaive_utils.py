@@ -6,17 +6,18 @@ import datetime
 
 GLAIVE_BUCKET = "glaive-model-weights"
 
-def _make_r_io_base(f, mode: str):
-    if not isinstance(f, io.IOBase):
-        f = open(f, mode=mode)
-    return f
-
-def jload(f, mode="r"):
+def load_jsonl(path, mode="r"):
     """Load a .jsonl file into a list of dictionaries."""
-    f = _make_r_io_base(f, mode)
-    jlist = [json.loads(line) for line in f]
-    f.close()
+    with open(path, mode):
+        jlist = [json.loads(line) for line in f]
     return jlist
+
+def load_json(path, mode="r"):
+    """Load a .jsonl file into a list of dictionaries."""
+    with open(path, mode) as f:
+        jlist = json.load(f)
+    return jlist
+
 
 def folder_exists_on_gcs(dir: str, bucket_name: str = GLAIVE_BUCKET):
     storage_client = storage.Client()
@@ -40,7 +41,18 @@ def upload_blob(source:str,
     url = blob.generate_signed_url(datetime.timedelta(seconds=864000), method='GET')
     return url
 
-def callback_completion(callback_url:str,model_url:str,failed:bool,error:str=None):
+def download_file(bucket_name, source_blob_name, destination_file_name):
+    """Downloads a file from Google Cloud Storage."""
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(source_blob_name)
+
+    blob.download_to_filename(destination_file_name)
+
+def callback_completion(callback_url:str,
+                        model_url:str,
+                        failed:bool,
+                        error:str=None):
     """
     Sends a callback to the specified URL.
     """

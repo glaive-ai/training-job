@@ -182,19 +182,21 @@ def train(model_args, data_args, training_args):
        data_args.gcs_data_path is None and data_args.hf_data_path:
         raise ValueError("Must specify either `local_data_path`, `data_url`, `gcs_data_path` or `hf_data_path`")
     
-    if rank == 0:
-        if data_args.gcs_data_path is not None:
+    if data_args.gcs_data_path is not None:
+        if local_rank == 0:
             logger.info(f"Downloading `{data_args.gcs_data_path}`")
             response = glaive_utils.download_file('glaive-data', data_args.gcs_data_path, data_args.gcs_data_path)            
-            data_args.local_data_path = data_args.gcs_data_path
+        data_args.local_data_path = data_args.gcs_data_path
         
-        if data_args.data_url is not None:
+    if data_args.data_url is not None:
+        downloaded_filename = os.path.basename(urlparse(data_args.data_url).path) 
+        if local_rank == 0:
             logger.info(f"Downloading `{data_args.data_url}`")
             response = requests.get(data_args.data_url)
-            downloaded_filename = os.path.basename(urlparse(data_args.data_url).path) 
             with open(downloaded_filename, 'w') as file:
                 file.write(response.text)
-                data_args.local_data_path = downloaded_filename
+        data_args.local_data_path = downloaded_filename
+        
         
         
     if training_args.use_fsdp:

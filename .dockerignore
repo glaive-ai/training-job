@@ -2,4 +2,5 @@ output/
 .git/
 __pycache__/
 *.json
+!gcs.json
 *.jsonl

@@ -18,7 +18,7 @@ spec:
             - name: GOOGLE_APPLICATION_CREDENTIALS
               value: gcs.json
           command: ["torchrun", "--nnodes", "1", "--nproc_per_node",  "8", 
-                    "train.py", "--model_id", "DSC-7B-magicoder-full",
+                    "train.py", "--model_id", "DSC-7B-code-assistant-v3-full",
                     "--model_name_or_path", "deepseek-ai/deepseek-coder-6.7b-base",
                     "--gcs_data_path", "glaive_code_assistant_v3.json",
                     "--prompt_key", "question", "--response_key", "answer",

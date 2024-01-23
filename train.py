@@ -174,8 +174,9 @@ def train(model_args, data_args, training_args):
 
         with open(os.path.join(output_dir, 'args.json'), 'w') as f: 
             args_dict = dict(model_args=asdict(model_args), 
-                                data_args=asdict(data_args),
-                                training_args=asdict(training_args))
+                             data_args=asdict(data_args),
+                             training_args=asdict(training_args),
+                             image_name=os.getenv('IMAGE_NAME', 'unknown'))
             json.dump(args_dict, f)
 
     if data_args.local_data_path is None and data_args.data_url is None and \

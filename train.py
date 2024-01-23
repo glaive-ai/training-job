@@ -198,7 +198,6 @@ def train(model_args, data_args, training_args):
         data_args.local_data_path = downloaded_filename
         
         
-        
     if training_args.use_fsdp:
         torch.distributed.barrier()
     
@@ -215,23 +214,13 @@ def train(model_args, data_args, training_args):
         use_fast=False
     )
 
-    special_tokens_dict = dict()
-    if tokenizer.pad_token is None:
-        special_tokens_dict["pad_token"] = DEFAULT_PAD_TOKEN
-    if tokenizer.eos_token is None:
-        special_tokens_dict["eos_token"] = DEFAULT_EOS_TOKEN
-    if tokenizer.unk_token is None:
-        special_tokens_dict["unk_token"] = DEFAULT_UNK_TOKEN
+    if model_args.model_name_or_path == 'mistralai/Mistral-7B-v0.1':
+        tokenizer.pad_token = tokenizer.eos_token
 
-    smart_tokenizer_and_embedding_resize(
-        special_tokens_dict=special_tokens_dict,
-        tokenizer=tokenizer,
-        model=model,
-    )
     if model_args.use_peft:
         lora_config = LoraConfig(task_type=TaskType.CAUSAL_LM, 
-                                r=model_args.lora_r,
-                                lora_alpha=model_args.lora_alpha)
+                                 r=model_args.lora_r,
+                                 lora_alpha=model_args.lora_alpha)
         model = get_peft_model(model, lora_config)
 
     if training_args.use_fsdp:
@@ -264,7 +253,6 @@ def train(model_args, data_args, training_args):
         else: 
             raise NotImplementedError("TODO")
         
-
     logger.info("Loading the data...")
     if data_args.local_data_path is not None:
         dataset = SFTDataset(tokenizer=tokenizer, data_path=data_args.local_data_path, 

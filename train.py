@@ -179,7 +179,7 @@ def train(model_args, data_args, training_args):
             json.dump(args_dict, f)
 
     if data_args.local_data_path is None and data_args.data_url is None and \
-       data_args.gcs_data_path is None and data_args.hf_data_path:
+       data_args.gcs_data_path is None and data_args.hf_data_path is not None:
         raise ValueError("Must specify either `local_data_path`, `data_url`, `gcs_data_path` or `hf_data_path`")
     
     if data_args.gcs_data_path is not None:

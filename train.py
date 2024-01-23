@@ -96,9 +96,9 @@ class TrainingArguments:
         default=None,
         metadata={"help": "Maximum sequence length. Sequences will be right padded (and possibly truncated)."},
     )
-    use_fsdp : Optional[bool] = field(default=True, 
+    use_fsdp : Optional[bool] = field(default=False, 
         metadata={"help": "use fully sharded data parallel?"})
-    use_activation_checkpointing : Optional[bool] = field(default=True, 
+    use_activation_checkpointing : Optional[bool] = field(default=False, 
         metadata={"help": "use activation checkpointing to reduce GPU memory footprint"})
     fsdp_sharding_strategy : Optional[str] = field(default='full_shard')
 

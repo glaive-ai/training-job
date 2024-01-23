@@ -22,8 +22,8 @@ spec:
                     "--model_name_or_path", "mistralai/Mistral-7B-v0.1",
                     "--hf_data_path", "ise-uiuc/Magicoder-OSS-Instruct-75K",
                     "--prompt_key", "problem", "--response_key", "solution",
-                    "--num_train_epochs",  "1", "--per_device_train_batch_size", "8",
-                    "--gradient_accumulation_steps", "2", 
+                    "--num_train_epochs",  "1", "--per_device_train_batch_size", "1",
+                    "--gradient_accumulation_steps", "16", 
                     "--logging_steps", "10",
                     "--eval_steps", "1000",
                     "--use_peft", "True"]

@@ -4,7 +4,7 @@ export JOB_NAME=training-job-$(shell git rev-parse HEAD)
 
 .PHONY: build
 build:
-	sudo docker build -f Dockerfile ./ -t $(IMAGE_NAME)
+	sudo docker build -f Dockerfile ---build-arg IMAGE_NAME=$(IMAGE_NAME) ./ -t $(IMAGE_NAME)
 
 .PHONY: push
 push: build
